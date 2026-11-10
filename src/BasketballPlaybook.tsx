@@ -1,33 +1,30 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Frame, PlaybookDrill, PlayerSimulationState, BallSimulationState } from './types';
-import { teamStorage, builtInDrills } from './drills';
+import { TeamPlayerProfile, Frame, PlaybookDrill, PlayerSimulationState, BallSimulationState } from './types';
+import { teamStorage as initialTeam, builtInDrills } from './drills';
 
-// Deep copy so edits never modify the built-in drill definitions.
-const cloneFrames = (frames: Frame[]): Frame[] => structuredClone(frames);
-
-export default function BasketballPlaybook() {
+export default function BasketballPlaybookUltimate() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  const [selectedDrill, setSelectedDrill] = useState<PlaybookDrill>(builtInDrills[0]);
-  const [frames, setFrames] = useState<Frame[]>(() => cloneFrames(builtInDrills[0].frames));
+  const [team, setTeam] = useState<TeamPlayerProfile[]>(initialTeam);
+  
+  const [newPlayerName, setNewPlayerName] = useState('');
+  const [newPlayerPos, setNewPlayerPos] = useState<'PG'|'SG'|'SF'|'PF'|'C'|'Def'>('PG');
+  const [newPlayerHeight, setNewPlayerHeight] = useState('1.90');
+  const [newPlayerTeam, setNewPlayerTeam] = useState<'offense'|'defense'>('offense');
+
+  const [selectedDrill, setSelectedDrill] = useState<PlaybookDrill>(builtInDrills);
+  const [frames, setFrames] = useState<Frame[]>(builtInDrills.frames);
   const [currentFrameIndex, setCurrentFrameIndex] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [isRecording, setIsRecording] = useState<boolean>(false);
   const [animationSpeed, setAnimationSpeed] = useState<number>(0.02);
-  const [savedJsonOutput, setSavedJsonOutput] = useState<string | null>(null);
+  const [serverStatus, setServerStatus] = useState<string | null>(null);
 
   const isDraggingPlayer = useRef<string | null>(null);
   const isDraggingBall = useRef<boolean>(false);
 
   const currentPlayersRender = useRef<PlayerSimulationState[]>([]);
   const currentBallRender = useRef<BallSimulationState>({ x: 0, y: 0, attachedToPlayerId: null });
-
-  const loadDrill = (drill: PlaybookDrill) => {
-    if (isPlaying) return;
-    setSelectedDrill(drill);
-    setFrames(cloneFrames(drill.frames));
-    setCurrentFrameIndex(0);
-    setSavedJsonOutput(null);
-  };
 
   useEffect(() => {
     if (!isPlaying && frames[currentFrameIndex]) {
@@ -37,6 +34,89 @@ export default function BasketballPlaybook() {
     }
   }, [frames, currentFrameIndex, isPlaying]);
 
+  const handleAddPlayer = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPlayerName.trim()) return;
+
+    const newId = `P_${Date.now()}`;
+    const newProfile: TeamPlayerProfile = {
+      id: newId,
+      name: newPlayerName,
+      position: newPlayerPos,
+      height: newPlayerHeight,
+      team: newPlayerTeam
+    };
+
+    setTeam(prev => [...prev, newProfile]);
+
+    setFrames(prevFrames => prevFrames.map(frame => ({
+      ...frame,
+      players: [...frame.players, { id: newId, x: 400, y: 250 }]
+    })));
+
+    setNewPlayerName('');
+  };
+
+  const recordNextStep = (updatedPlayers: PlayerSimulationState[], updatedBall: BallSimulationState) => {
+    if (!isRecording) return;
+    
+    setFrames(prev => {
+      const nextFrame: Frame = {
+        players: JSON.parse(JSON.stringify(updatedPlayers)),
+        ball: JSON.parse(JSON.stringify(updatedBall))
+      };
+      const newFrames = [...prev, nextFrame];
+      setCurrentFrameIndex(newFrames.length - 1);
+      return newFrames;
+    });
+  };
+
+  const handleSaveToServer = async () => {
+    setServerStatus("🔄 שומר תרגיל בשרת...");
+    
+    const payload = {
+      drill_name: selectedDrill.name,
+      description: selectedDrill.description,
+      recorded_at: new Date().toISOString(),
+      total_frames: frames.length,
+      frames: frames
+    };
+
+    try {
+      const response = await fetch('https://your-backend-api.com/api/drills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (response.ok) {
+        setServerStatus("✅ התרגיל נשמר בהצלחה בבסיס הנתונים!");
+      } else {
+        setServerStatus(`❌ שגיאת שרת: ${response.statusText} (הנתונים הודפסו לקונסול)`);
+        console.log("Saved Payload:", payload);
+      }
+    } catch (error) {
+      setServerStatus("⚠️ שרת לא זמין כרגע, קוד ה-JSON הודפס בהצלחה ל-Console של הדפדפן!");
+      console.log("Basketball Drill JSON Payload:", payload);
+    }
+  };
+
+  const handleStartNewRecording = () => {
+    const freshFrame: Frame = {
+      players: team.map((p, idx) => ({ id: p.id, x: 200 + (idx * 50), y: 150 + (p.team === 'defense' ? 100 : 0) })),
+      ball: { x: 200, y: 150, attachedToPlayerId: team[0]?.id || null }
+    };
+    setFrames([freshFrame]);
+    setCurrentFrameIndex(0);
+    setIsRecording(true);
+    setSelectedDrill({
+      id: 'custom_recorded',
+      name: 'תרגיל מוקלט חדש 🔴',
+      description: 'תרגיל שנוצר והוקלט בזמן אמת על ידי המאמן בתנועת עכבר חופשית.',
+      frames: [freshFrame]
+    });
+  };
+
   const drawCourt = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -44,45 +124,30 @@ export default function BasketballPlaybook() {
     if (!ctx) return;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = '#fbe9d0';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = '#2c3e50';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(0, 0, canvas.width, canvas.height);
-
+    ctx.fillStyle = '#fbe9d0'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#2c3e50'; ctx.lineWidth = 3; ctx.strokeRect(0, 0, canvas.width, canvas.height);
     ctx.beginPath(); ctx.arc(400, 470, 320, Math.PI, 2 * Math.PI); ctx.stroke();
     ctx.strokeRect(300, 320, 200, 150);
-    ctx.lineWidth = 5;
-    ctx.beginPath(); ctx.moveTo(370, 450); ctx.lineTo(430, 450); ctx.stroke();
+    ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(370, 450); ctx.lineTo(430, 450); ctx.stroke();
     ctx.beginPath(); ctx.arc(400, 440, 12, 0, 2 * Math.PI); ctx.fillStyle = '#e67e22'; ctx.fill(); ctx.stroke();
 
     currentPlayersRender.current.forEach((pSim) => {
-      const profile = teamStorage.find((t) => t.id === pSim.id);
+      const profile = team.find((t) => t.id === pSim.id);
       if (!profile) return;
 
-      ctx.beginPath();
-      ctx.arc(pSim.x, pSim.y, 18, 0, 2 * Math.PI);
-      ctx.fillStyle = profile.team === 'offense' ? '#3498db' : '#e74c3c';
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = '#ffffff';
-      ctx.stroke();
-
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 11px Arial';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
+      ctx.beginPath(); ctx.arc(pSim.x, pSim.y, 18, 0, 2 * Math.PI);
+      ctx.fillStyle = profile.team === 'offense' ? '#3498db' : '#e74c3c'; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = '#ffffff'; ctx.stroke();
+      ctx.fillStyle = '#ffffff'; ctx.font = 'bold 11px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(profile.position, pSim.x, pSim.y);
     });
 
     const ball = currentBallRender.current;
     let ballX = ball.x; let ballY = ball.y;
-
     if (ball.attachedToPlayerId) {
       const player = currentPlayersRender.current.find((p) => p.id === ball.attachedToPlayerId);
       if (player) { ballX = player.x + 16; ballY = player.y - 16; }
     }
-
     ctx.beginPath(); ctx.arc(ballX, ballY, 8, 0, 2 * Math.PI); ctx.fillStyle = '#e67e22'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#000000'; ctx.stroke();
   };
 
@@ -115,161 +180,176 @@ export default function BasketballPlaybook() {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    const prevFrame = frames[currentFrameIndex];
-    let currentFrame: Frame;
+    const updatedFrames = [...frames];
+    const currentFrame = updatedFrames[currentFrameIndex];
 
     if (isDraggingPlayer.current) {
-      const draggedId = isDraggingPlayer.current;
-      currentFrame = {
-        ...prevFrame,
-        players: prevFrame.players.map((p) => p.id === draggedId ? { ...p, x, y } : p),
-      };
+      currentFrame.players = currentFrame.players.map((p) => p.id === isDraggingPlayer.current ? { ...p, x, y } : p);
     } else if (isDraggingBall.current) {
-      const hoverPlayer = prevFrame.players.find((p) => Math.sqrt((p.x - x) ** 2 + (p.y - y) ** 2) <= 22);
-      currentFrame = {
-        ...prevFrame,
-        ball: hoverPlayer
-          ? { ...prevFrame.ball, attachedToPlayerId: hoverPlayer.id }
-          : { x, y, attachedToPlayerId: null },
-      };
+      const hoverPlayer = currentFrame.players.find((p) => Math.sqrt((p.x - x) ** 2 + (p.y - y) ** 2) <= 22);
+      if (hoverPlayer) {
+        currentFrame.ball.attachedToPlayerId = hoverPlayer.id;
+      } else {
+        currentFrame.ball.attachedToPlayerId = null;
+        currentFrame.ball.x = x; currentFrame.ball.y = y;
+      }
     } else {
       return;
     }
 
-    const updatedFrames = frames.map((f, i) => (i === currentFrameIndex ? currentFrame : f));
     setFrames(updatedFrames);
     currentPlayersRender.current = JSON.parse(JSON.stringify(currentFrame.players));
     currentBallRender.current = JSON.parse(JSON.stringify(currentFrame.ball));
     drawCourt();
   };
 
-  const handleMouseUp = () => { isDraggingPlayer.current = null; isDraggingBall.current = false; };
-
-  const handleSaveDrill = () => {
-    const exportData = {
-      drill_id: selectedDrill.id,
-      name: selectedDrill.name,
-      last_modified: new Date().toISOString(),
-      frames: frames
-    };
-    setSavedJsonOutput(JSON.stringify(exportData, null, 2));
+  const handleMouseUp = () => {
+    if (isRecording && (isDraggingPlayer.current || isDraggingBall.current)) {
+      recordNextStep(currentPlayersRender.current, currentBallRender.current);
+    }
+    isDraggingPlayer.current = null;
+    isDraggingBall.current = false;
   };
 
   const playAnimation = () => {
     if (frames.length < 2) return;
     setIsPlaying(true);
+    setIsRecording(false);
 
-    let frameIdx = 0;
-    let progress = 0;
-
+    let frameIdx = 0; let progress = 0;
     const animate = () => {
       if (frameIdx >= frames.length - 1) {
-        setIsPlaying(false);
-        setCurrentFrameIndex(frames.length - 1);
-        return;
+        setIsPlaying(false); setCurrentFrameIndex(frames.length - 1); return;
       }
-
-      const startF = frames[frameIdx];
-      const endF = frames[frameIdx + 1];
-
+      const startF = frames[frameIdx]; const endF = frames[frameIdx + 1];
       currentPlayersRender.current = startF.players.map((sP) => {
         const eP = endF.players.find((p) => p.id === sP.id);
         if (!eP) return sP;
         return { id: sP.id, x: sP.x + (eP.x - sP.x) * progress, y: sP.y + (eP.y - sP.y) * progress };
       });
-
       const getAbsoluteBallPos = (f: Frame) => {
         if (f.ball.attachedToPlayerId) {
           const p = f.players.find((pl) => pl.id === f.ball.attachedToPlayerId);
           return p ? { x: p.x + 16, y: p.y - 16 } : { x: f.ball.x, y: f.ball.y };
-        }
-        return { x: f.ball.x, y: f.ball.y };
+        } return { x: f.ball.x, y: f.ball.y };
       };
-
-      const ballStart = getAbsoluteBallPos(startF);
-      const ballEnd = getAbsoluteBallPos(endF);
-
+      const ballStart = getAbsoluteBallPos(startF); const ballEnd = getAbsoluteBallPos(endF);
       currentBallRender.current = {
         attachedToPlayerId: progress > 0.85 ? endF.ball.attachedToPlayerId : null,
-        x: ballStart.x + (ballEnd.x - ballStart.x) * progress,
-        y: ballStart.y + (ballEnd.y - ballStart.y) * progress,
+        x: ballStart.x + (ballEnd.x - ballStart.x) * progress, y: ballStart.y + (ballEnd.y - ballStart.y) * progress,
       };
-
       drawCourt();
-
       progress += animationSpeed;
-      if (progress >= 1) {
-        progress = 0;
-        frameIdx++;
-        setCurrentFrameIndex(frameIdx);
-      }
-
+      if (progress >= 1) { progress = 0; frameIdx++; setCurrentFrameIndex(frameIdx); }
       requestAnimationFrame(animate);
     };
-
     requestAnimationFrame(animate);
   };
+  function loadDrill(builtInDrills: PlaybookDrill): void {
+      const drillFrames = builtInDrills.frames.map((frame) => ({
+        players: frame.players.map((player) => ({ ...player })),
+        ball: { ...frame.ball },
+      }));
+  
+      setSelectedDrill(builtInDrills);
+      setFrames(drillFrames);
+      setCurrentFrameIndex(0);
+      setIsRecording(false);
+    }
 
   return (
-    <div style={{ display: 'flex', gap: '20px', padding: '20px', direction: 'rtl', fontFamily: 'Arial, sans-serif' }}>
-      <div style={{ width: '280px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
-        <div style={{ background: '#fff', padding: '15px', borderRadius: '8px', border: '1px solid #ddd' }}>
-          <h3 style={{ marginTop: 0, color: '#2c3e50' }}>📖 תרגילי 5X5</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {builtInDrills.map((drill) => (
-              <div
-                key={drill.id}
-                onClick={() => loadDrill(drill)}
-                style={{
-                  padding: '12px', borderRadius: '6px',
-                  border: selectedDrill.id === drill.id ? '2px solid #e67e22' : '1px solid #ddd',
-                  backgroundColor: selectedDrill.id === drill.id ? '#fff9f4' : '#fff',
-                  cursor: isPlaying ? 'not-allowed' : 'pointer'
-                }}
-              >
-                <strong style={{ fontSize: '13px' }}>{drill.name}</strong>
-              </div>
-            ))}
-          </div>
+    <div style={{ display: 'flex', gap: '25px', padding: '20px', direction: 'rtl', fontFamily: 'Arial, sans-serif' }}>
+      <div style={{ width: '310px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
+        <div style={{ background: '#fff', padding: '15px', borderRadius: '8px', border: '1px solid #ddd', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
+          <h3 style={{ marginTop: 0, color: '#2c3e50', fontSize: '15px' }}>🏃‍♂️ הוספת שחקן לסגל ולמגרש</h3>
+          <form onSubmit={handleAddPlayer} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <input 
+              type="text" placeholder="שם השחקן" value={newPlayerName} 
+              onChange={e => setNewPlayerName(e.target.value)}
+              style={{ padding: '6px', borderRadius: '4px', border: '1px solid #ccc' }}
+            />
+            <div style={{ display: 'flex', gap: '5px' }}>
+              <select value={newPlayerPos} onChange={e => setNewPlayerPos(e.target.value as any)} style={{ flex: 1, padding: '5px' }}>
+                <option value="PG">PG (רכז)</option> <option value="SG">SG (קלעי)</option>
+                <option value="SF">SF (סמול)</option> <option value="PF">PF (פאוור)</option>
+                <option value="C">C (סנטר)</option> <option value="Def">Def (הגנה)</option>
+              </select>
+              <input 
+                type="text" placeholder="גובה" value={newPlayerHeight} onChange={e => setNewPlayerHeight(e.target.value)}
+                style={{ width: '60px', padding: '5px', textAlign: 'center' }}
+              />
+            </div>
+            <select value={newPlayerTeam} onChange={e => setNewPlayerTeam(e.target.value as any)} style={{ padding: '5px' }}>
+              <option value="offense">קבוצת התקפה (כחול)</option>
+              <option value="defense">קבוצת הגנה (אדום)</option>
+            </select>
+            <button type="submit" style={{ padding: '8px', backgroundColor: '#2ecc71', color: '#fff', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}>
+              ＋ הוסף שחקן למגרש
+            </button>
+          </form>
         </div>
 
         <div style={{ background: '#fff', padding: '15px', borderRadius: '8px', border: '1px solid #ddd' }}>
-          <h4 style={{ marginTop: 0, marginBottom: '10px' }}>⚡ בקרת מהירות</h4>
-          <input 
-            type="range" min="0.005" max="0.05" step="0.005"
-            value={animationSpeed} 
-            onChange={(e) => setAnimationSpeed(parseFloat(e.target.value))}
-            style={{ width: '100%' }}
-          />
+          <h3 style={{ marginTop: 0, color: '#2c3e50', fontSize: '15px' }}>📖 ספר תרגילים קבוצתי</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <button
+              disabled={isPlaying || isRecording}
+              onClick={() => loadDrill(builtInDrills)}
+              style={{
+                padding: '10px', borderRadius: '6px', textAlign: 'right',
+                border: selectedDrill.id === builtInDrills.id ? '2px solid #e67e22' : '1px solid #ddd',
+                backgroundColor: selectedDrill.id === builtInDrills.id ? '#fff9f4' : '#fff',
+                cursor: (isPlaying || isRecording) ? 'not-allowed' : 'pointer'
+              }}
+            >
+              <strong style={{ fontSize: '13px' }}>{builtInDrills.name}</strong>
+            </button>
+          </div>
         </div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '15px', flex: 1 }}>
-        <div style={{ textAlign: 'center' }}>
-          <h2 style={{ margin: '0 0 5px 0' }}>{selectedDrill.name}</h2>
-          <p style={{ margin: 0, color: '#555', fontSize: '13px' }}>{selectedDrill.description}</p>
+        <div style={{ display: 'flex', gap: '10px', background: '#fff', padding: '12px 20px', borderRadius: '8px', border: '1px solid #ddd', width: '800px', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button 
+              onClick={handleStartNewRecording} disabled={isPlaying || isRecording}
+              style={{ padding: '10px 18px', backgroundColor: isRecording ? '#bdc3c7' : '#e74c3c', color: '#fff', border: 'none', borderRadius: '5px', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              {isRecording ? '🔴 מקליט תנועה...' : '⏺️ התחל הקלטת תרגיל'}
+            </button>
+
+            {isRecording && (
+              <button 
+                onClick={() => setIsRecording(false)}
+                style={{ padding: '10px 15px', backgroundColor: '#34495e', color: '#fff', border: 'none', borderRadius: '5px', cursor: 'pointer' }}
+              >
+                ⏹️ עצור הקלטה ({frames.length} שלבים)
+              </button>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button onClick={playAnimation} disabled={isPlaying || isRecording || frames.length < 2} style={{ padding: '10px 20px', backgroundColor: '#e67e22', color: '#fff', border: 'none', borderRadius: '5px', fontWeight: 'bold', cursor: 'pointer' }}>
+              ▶️ נגן מהלך
+            </button>
+            
+            <button onClick={handleSaveToServer} disabled={isPlaying} style={{ padding: '10px 20px', backgroundColor: '#2980b9', color: '#fff', border: 'none', borderRadius: '5px', fontWeight: 'bold', cursor: 'pointer' }}>
+              💾 שמור וסנכרן לשרת
+            </button>
+          </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <button onClick={playAnimation} disabled={isPlaying} style={{ padding: '10px 25px', backgroundColor: '#e67e22', color: '#fff', border: 'none', borderRadius: '5px', fontWeight: 'bold', cursor: 'pointer' }}>
-            {isPlaying ? '⚡ רץ...' : '▶️ הפעל מהלך'}
-          </button>
-          <button onClick={handleSaveDrill} disabled={isPlaying} style={{ padding: '10px 20px', backgroundColor: '#3498db', color: '#fff', border: 'none', borderRadius: '5px', fontWeight: 'bold', cursor: 'pointer' }}>
-            💾 שמור וייצא תרגיל
-          </button>
-        </div>
+        {serverStatus && (
+          <div style={{ background: '#ebf5fb', color: '#2980b9', padding: '8px 20px', borderRadius: '5px', width: '760px', textAlign: 'center', fontWeight: 'bold', fontSize: '13px', border: '1px solid #d4e6f1' }}>
+            {serverStatus}
+          </div>
+        )}
 
         <canvas
           ref={canvasRef} width={800} height={500}
           onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
           style={{ border: '3px solid #2c3e50', borderRadius: '8px', background: '#fbe9d0' }}
         />
-
-        {savedJsonOutput && (
-          <div style={{ width: '800px', background: '#2c3e50', color: '#2ecc71', padding: '15px', borderRadius: '6px', textAlign: 'left', direction: 'ltr' }}>
-            <pre style={{ margin: 0, fontSize: '11px', overflowX: 'auto', maxHeight: '200px' }}>{savedJsonOutput}</pre>
-          </div>
-        )}
       </div>
     </div>
   );

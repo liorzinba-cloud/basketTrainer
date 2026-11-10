@@ -1,7 +1,7 @@
 export interface TeamPlayerProfile {
   id: string;
   name: string;
-  position: 'PG' | 'SG' | 'SF' | 'PF' | 'C' | 'Def1' | 'Def2' | 'Def3' | 'Def4' | 'Def5';
+  position: 'PG' | 'SG' | 'SF' | 'PF' | 'C' | 'Def';
   height: string;
   team: 'offense' | 'defense';
 }
