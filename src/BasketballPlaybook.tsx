@@ -1,6 +1,30 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { TeamPlayerProfile, Frame, PlaybookDrill, PlayerSimulationState, BallSimulationState } from './types';
-import { teamStorage as initialTeam, builtInDrills } from './drills';
+import { teamStorage as initialTeam, builtInDrills, playbookDrills } from './drills';
+import { api, RosterPlayer } from './api';
+
+const LOCAL_ROSTER_KEY = 'basketballTrainer.extraPlayers';
+
+const samePlayer = (a: RosterPlayer, b: RosterPlayer) =>
+  a.name === b.name && a.position === b.position && a.team === b.team;
+
+const mergeRosters = (base: RosterPlayer[], extra: RosterPlayer[]) =>
+  [...base, ...extra.filter(e => !base.some(b => samePlayer(b, e)))];
+
+const loadLocalPlayers = (): RosterPlayer[] => {
+  try {
+    return JSON.parse(localStorage.getItem(LOCAL_ROSTER_KEY) || '[]');
+  } catch {
+    return [];
+  }
+};
+
+const saveLocalPlayer = (player: RosterPlayer) => {
+  const players = loadLocalPlayers();
+  if (!players.some(p => samePlayer(p, player))) {
+    localStorage.setItem(LOCAL_ROSTER_KEY, JSON.stringify([...players, player]));
+  }
+};
 
 export default function BasketballPlaybookUltimate() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -11,6 +35,31 @@ export default function BasketballPlaybookUltimate() {
   const [newPlayerPos, setNewPlayerPos] = useState<'PG'|'SG'|'SF'|'PF'|'C'|'Def'>('PG');
   const [newPlayerHeight, setNewPlayerHeight] = useState('1.90');
   const [newPlayerTeam, setNewPlayerTeam] = useState<'offense'|'defense'>('offense');
+  const [selectedRosterIndex, setSelectedRosterIndex] = useState<string>('');
+  const [roster, setRoster] = useState<RosterPlayer[]>([]);
+
+  const [savedDrills, setSavedDrills] = useState<PlaybookDrill[]>([]);
+  const [serverOnline, setServerOnline] = useState<boolean>(false);
+
+  // Load the roster and saved drills from the server.
+  // If the server is down (e.g. on GitHub Pages), fall back to public/players.json + localStorage.
+  useEffect(() => {
+    api.getPlayers()
+      .then(players => {
+        setServerOnline(true);
+        setRoster(mergeRosters(players, loadLocalPlayers()));
+      })
+      .catch(() =>
+        fetch('players.json', { cache: 'no-store' })
+          .then(res => res.json())
+          .then((filePlayers: RosterPlayer[]) => setRoster(mergeRosters(filePlayers, loadLocalPlayers())))
+          .catch(() => setRoster(loadLocalPlayers()))
+      );
+
+    api.getDrills()
+      .then(setSavedDrills)
+      .catch(() => setSavedDrills([]));
+  }, []);
 
   const [selectedDrill, setSelectedDrill] = useState<PlaybookDrill>(builtInDrills);
   const [frames, setFrames] = useState<Frame[]>(builtInDrills.frames);
@@ -19,6 +68,8 @@ export default function BasketballPlaybookUltimate() {
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [animationSpeed, setAnimationSpeed] = useState<number>(0.02);
   const [serverStatus, setServerStatus] = useState<string | null>(null);
+
+  const [hoveredPlayer, setHoveredPlayer] = useState<{ profile: TeamPlayerProfile; x: number; y: number } | null>(null);
 
   const isDraggingPlayer = useRef<string | null>(null);
   const isDraggingBall = useRef<boolean>(false);
@@ -34,27 +85,68 @@ export default function BasketballPlaybookUltimate() {
     }
   }, [frames, currentFrameIndex, isPlaying]);
 
-  const handleAddPlayer = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newPlayerName.trim()) return;
+  const putPlayerOnField = (player: RosterPlayer) => {
+    const existing = team.find(p => p.position === player.position && p.team === player.team);
+
+    if (existing) {
+      // Replace the player in the same position, keeping their id so their
+      // court positions in every frame (and ball possession) are preserved.
+      setTeam(prev => prev.map(p =>
+        p.id === existing.id ? { ...p, name: player.name, height: player.height } : p
+      ));
+      return;
+    }
 
     const newId = `P_${Date.now()}`;
-    const newProfile: TeamPlayerProfile = {
-      id: newId,
-      name: newPlayerName,
-      position: newPlayerPos,
-      height: newPlayerHeight,
-      team: newPlayerTeam
-    };
-
-    setTeam(prev => [...prev, newProfile]);
+    setTeam(prev => [...prev, { id: newId, ...player }]);
 
     setFrames(prevFrames => prevFrames.map(frame => ({
       ...frame,
       players: [...frame.players, { id: newId, x: 400, y: 250 }]
     })));
+  };
 
+  const handleAddPlayer = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPlayerName.trim()) return;
+
+    const player: RosterPlayer = {
+      name: newPlayerName.trim(),
+      position: newPlayerPos,
+      height: newPlayerHeight,
+      team: newPlayerTeam
+    };
+    putPlayerOnField(player);
+    saveToRoster(player);
     setNewPlayerName('');
+  };
+
+  // Saves the player on the server; if the server is unreachable, keeps it in localStorage.
+  const saveToRoster = async (player: RosterPlayer) => {
+    try {
+      const players = await api.addPlayer(player);
+      setServerOnline(true);
+      setRoster(mergeRosters(players, loadLocalPlayers()));
+    } catch {
+      setServerOnline(false);
+      saveLocalPlayer(player);
+      setRoster(prev => mergeRosters(prev, [player]));
+    }
+  };
+
+  const handleDownloadRoster = () => {
+    const blob = new Blob([JSON.stringify(roster, null, 2) + '\n'], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'players.json';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleAddFromRoster = () => {
+    const player = roster[Number(selectedRosterIndex)];
+    if (player) putPlayerOnField(player);
   };
 
   const recordNextStep = (updatedPlayers: PlayerSimulationState[], updatedBall: BallSimulationState) => {
@@ -72,32 +164,42 @@ export default function BasketballPlaybookUltimate() {
   };
 
   const handleSaveToServer = async () => {
-    setServerStatus("🔄 שומר תרגיל בשרת...");
-    
+    const defaultName = selectedDrill.id === 'custom_recorded' ? '' : `${selectedDrill.name} (עותק)`;
+    const name = window.prompt('שם התרגיל לשמירה:', defaultName)?.trim();
+    if (!name) return;
+
+    // Save only the profiles the drill actually uses, so it can be reloaded later.
+    const usedIds = new Set(frames.flatMap(f => f.players.map(p => p.id)));
     const payload = {
-      drill_name: selectedDrill.name,
-      description: selectedDrill.description,
-      recorded_at: new Date().toISOString(),
-      total_frames: frames.length,
-      frames: frames
+      name,
+      description: selectedDrill.id === 'custom_recorded' ? 'תרגיל שהוקלט על ידי המאמן.' : selectedDrill.description,
+      frames,
+      team: team.filter(p => usedIds.has(p.id)),
     };
 
+    setServerStatus('🔄 שומר תרגיל בשרת...');
     try {
-      const response = await fetch('https://your-backend-api.com/api/drills', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (response.ok) {
-        setServerStatus("✅ התרגיל נשמר בהצלחה בבסיס הנתונים!");
-      } else {
-        setServerStatus(`❌ שגיאת שרת: ${response.statusText} (הנתונים הודפסו לקונסול)`);
-        console.log("Saved Payload:", payload);
-      }
+      const saved = await api.addDrill(payload);
+      setServerOnline(true);
+      setSavedDrills(prev => [...prev, saved]);
+      setSelectedDrill(saved);
+      setServerStatus(`✅ התרגיל "${saved.name}" נשמר בהצלחה!`);
     } catch (error) {
-      setServerStatus("⚠️ שרת לא זמין כרגע, קוד ה-JSON הודפס בהצלחה ל-Console של הדפדפן!");
-      console.log("Basketball Drill JSON Payload:", payload);
+      setServerOnline(false);
+      setServerStatus('⚠️ השרת לא זמין (npm run server). קוד ה-JSON הודפס ל-Console של הדפדפן.');
+      console.log('Basketball Drill JSON Payload:', payload, error);
+    }
+  };
+
+  const handleDeleteSavedDrill = async (drill: PlaybookDrill) => {
+    if (!window.confirm(`למחוק את התרגיל "${drill.name}"?`)) return;
+    try {
+      await api.deleteDrill(drill.id);
+      setSavedDrills(prev => prev.filter(d => d.id !== drill.id));
+      if (selectedDrill.id === drill.id) loadDrill(builtInDrills);
+      setServerStatus(`🗑️ התרגיל "${drill.name}" נמחק.`);
+    } catch {
+      setServerStatus('❌ מחיקת התרגיל נכשלה – השרת לא זמין.');
     }
   };
 
@@ -173,12 +275,30 @@ export default function BasketballPlaybookUltimate() {
     if (clickedPlayer) isDraggingPlayer.current = clickedPlayer.id;
   };
 
+  const updateHoveredPlayer = (x: number, y: number) => {
+    const hit = currentPlayersRender.current.find((p) => Math.sqrt((p.x - x) ** 2 + (p.y - y) ** 2) <= 18);
+    const profile = hit && team.find((t) => t.id === hit.id);
+    if (!hit || !profile) {
+      if (hoveredPlayer) setHoveredPlayer(null);
+      return;
+    }
+    if (hoveredPlayer?.profile.id !== profile.id || hoveredPlayer.x !== hit.x || hoveredPlayer.y !== hit.y) {
+      setHoveredPlayer({ profile, x: hit.x, y: hit.y });
+    }
+  };
+
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (isPlaying) return;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+
+    if (!isDraggingPlayer.current && !isDraggingBall.current) {
+      updateHoveredPlayer(x, y);
+      return;
+    }
+    if (hoveredPlayer) setHoveredPlayer(null);
 
     const updatedFrames = [...frames];
     const currentFrame = updatedFrames[currentFrameIndex];
@@ -193,8 +313,6 @@ export default function BasketballPlaybookUltimate() {
         currentFrame.ball.attachedToPlayerId = null;
         currentFrame.ball.x = x; currentFrame.ball.y = y;
       }
-    } else {
-      return;
     }
 
     setFrames(updatedFrames);
@@ -213,6 +331,7 @@ export default function BasketballPlaybookUltimate() {
 
   const playAnimation = () => {
     if (frames.length < 2) return;
+    setHoveredPlayer(null);
     setIsPlaying(true);
     setIsRecording(false);
 
@@ -245,13 +364,22 @@ export default function BasketballPlaybookUltimate() {
     };
     requestAnimationFrame(animate);
   };
-  function loadDrill(builtInDrills: PlaybookDrill): void {
-      const drillFrames = builtInDrills.frames.map((frame) => ({
+  function loadDrill(drill: PlaybookDrill): void {
+      const drillFrames = drill.frames.map((frame) => ({
         players: frame.players.map((player) => ({ ...player })),
         ball: { ...frame.ball },
       }));
   
-      setSelectedDrill(builtInDrills);
+      // Saved drills carry their own player profiles; add/update them in the team.
+      if (drill.team?.length) {
+        setTeam(prev => {
+          const byId = new Map(prev.map(p => [p.id, p]));
+          drill.team!.forEach(p => byId.set(p.id, p));
+          return [...byId.values()];
+        });
+      }
+
+      setSelectedDrill(drill);
       setFrames(drillFrames);
       setCurrentFrameIndex(0);
       setIsRecording(false);
@@ -261,6 +389,38 @@ export default function BasketballPlaybookUltimate() {
     <div style={{ display: 'flex', gap: '25px', padding: '20px', direction: 'rtl', fontFamily: 'Arial, sans-serif' }}>
       <div style={{ width: '310px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
         <div style={{ background: '#fff', padding: '15px', borderRadius: '8px', border: '1px solid #ddd', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
+          <h3 style={{ marginTop: 0, color: '#2c3e50', fontSize: '15px' }}>📋 בחירה מהסגל</h3>
+          <div style={{ display: 'flex', gap: '5px', marginBottom: '12px' }}>
+            <select
+              value={selectedRosterIndex}
+              onChange={e => setSelectedRosterIndex(e.target.value)}
+              style={{ flex: 1, padding: '5px' }}
+            >
+              <option value="">בחר שחקן...</option>
+              {roster.map((p, i) => (
+                <option key={i} value={i}>
+                  {p.name} – {p.position} – {p.height} ({p.team === 'offense' ? 'התקפה' : 'הגנה'})
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={handleAddFromRoster}
+              disabled={selectedRosterIndex === ''}
+              style={{ padding: '6px 10px', backgroundColor: '#3498db', color: '#fff', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: selectedRosterIndex === '' ? 'not-allowed' : 'pointer' }}
+            >
+              הכנס למגרש
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={handleDownloadRoster}
+            disabled={roster.length === 0}
+            style={{ width: '100%', padding: '6px', marginBottom: '12px', backgroundColor: '#fff', color: '#2c3e50', border: '1px solid #ccc', borderRadius: '4px', cursor: roster.length === 0 ? 'not-allowed' : 'pointer' }}
+          >
+            ⬇ הורד את הסגל כקובץ players.json
+          </button>
+
           <h3 style={{ marginTop: 0, color: '#2c3e50', fontSize: '15px' }}>🏃‍♂️ הוספת שחקן לסגל ולמגרש</h3>
           <form onSubmit={handleAddPlayer} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             <input 
@@ -292,19 +452,73 @@ export default function BasketballPlaybookUltimate() {
         <div style={{ background: '#fff', padding: '15px', borderRadius: '8px', border: '1px solid #ddd' }}>
           <h3 style={{ marginTop: 0, color: '#2c3e50', fontSize: '15px' }}>📖 ספר תרגילים קבוצתי</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <button
-              disabled={isPlaying || isRecording}
-              onClick={() => loadDrill(builtInDrills)}
-              style={{
-                padding: '10px', borderRadius: '6px', textAlign: 'right',
-                border: selectedDrill.id === builtInDrills.id ? '2px solid #e67e22' : '1px solid #ddd',
-                backgroundColor: selectedDrill.id === builtInDrills.id ? '#fff9f4' : '#fff',
-                cursor: (isPlaying || isRecording) ? 'not-allowed' : 'pointer'
-              }}
-            >
-              <strong style={{ fontSize: '13px' }}>{builtInDrills.name}</strong>
-            </button>
+            {playbookDrills.map(drill => (
+              <button
+                key={drill.id}
+                disabled={isPlaying || isRecording}
+                onClick={() => loadDrill(drill)}
+                title={drill.description}
+                style={{
+                  padding: '10px', borderRadius: '6px', textAlign: 'right',
+                  border: selectedDrill.id === drill.id ? '2px solid #e67e22' : '1px solid #ddd',
+                  backgroundColor: selectedDrill.id === drill.id ? '#fff9f4' : '#fff',
+                  cursor: (isPlaying || isRecording) ? 'not-allowed' : 'pointer'
+                }}
+              >
+                <strong style={{ fontSize: '13px' }}>{drill.name}</strong>
+                {selectedDrill.id === drill.id && (
+                  <div style={{ fontSize: '11px', color: '#555', marginTop: '4px', fontWeight: 'normal' }}>
+                    {drill.description}
+                  </div>
+                )}
+              </button>
+            ))}
           </div>
+        </div>
+
+        <div style={{ background: '#fff', padding: '15px', borderRadius: '8px', border: '1px solid #ddd' }}>
+          <h3 style={{ marginTop: 0, color: '#2c3e50', fontSize: '15px' }}>
+            💾 תרגילים שמורים{' '}
+            <span style={{ fontSize: '11px', fontWeight: 'normal', color: serverOnline ? '#27ae60' : '#c0392b' }}>
+              {serverOnline ? '● שרת מחובר' : '● שרת לא מחובר'}
+            </span>
+          </h3>
+          {savedDrills.length === 0 ? (
+            <div style={{ fontSize: '12px', color: '#777' }}>
+              {serverOnline ? 'עדיין אין תרגילים שמורים. הקליטו תרגיל ולחצו על כפתור השמירה.' : 'הפעילו את השרת (npm run server) כדי לראות תרגילים שמורים.'}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {savedDrills.map(drill => (
+                <div key={drill.id} style={{ display: 'flex', gap: '5px' }}>
+                  <button
+                    disabled={isPlaying || isRecording}
+                    onClick={() => loadDrill(drill)}
+                    title={drill.description}
+                    style={{
+                      flex: 1, padding: '8px', borderRadius: '6px', textAlign: 'right',
+                      border: selectedDrill.id === drill.id ? '2px solid #e67e22' : '1px solid #ddd',
+                      backgroundColor: selectedDrill.id === drill.id ? '#fff9f4' : '#fff',
+                      cursor: (isPlaying || isRecording) ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    <strong style={{ fontSize: '13px' }}>{drill.name}</strong>
+                    <div style={{ fontSize: '11px', color: '#777', fontWeight: 'normal' }}>
+                      {drill.frames.length} שלבים{drill.savedAt ? ` · ${new Date(drill.savedAt).toLocaleDateString('he-IL')}` : ''}
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => handleDeleteSavedDrill(drill)}
+                    disabled={isPlaying || isRecording}
+                    title="מחק תרגיל"
+                    style={{ padding: '0 10px', border: '1px solid #ddd', borderRadius: '6px', background: '#fff', cursor: 'pointer' }}
+                  >
+                    🗑️
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -345,11 +559,33 @@ export default function BasketballPlaybookUltimate() {
           </div>
         )}
 
-        <canvas
-          ref={canvasRef} width={800} height={500}
-          onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
-          style={{ border: '3px solid #2c3e50', borderRadius: '8px', background: '#fbe9d0' }}
-        />
+        <div style={{ position: 'relative' }}>
+          <canvas
+            ref={canvasRef} width={800} height={500}
+            onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}
+            onMouseLeave={() => { handleMouseUp(); setHoveredPlayer(null); }}
+            style={{ border: '3px solid #2c3e50', borderRadius: '8px', background: '#fbe9d0', cursor: hoveredPlayer ? 'grab' : 'default', display: 'block' }}
+          />
+          {hoveredPlayer && (
+            <div
+              style={{
+                position: 'absolute',
+                // +3 accounts for the canvas border
+                left: hoveredPlayer.x + 3, top: hoveredPlayer.y + 3 - 30,
+                transform: 'translate(-50%, -100%)',
+                background: 'rgba(44, 62, 80, 0.92)', color: '#fff',
+                padding: '5px 10px', borderRadius: '6px', fontSize: '12px',
+                whiteSpace: 'nowrap', pointerEvents: 'none', textAlign: 'center',
+                boxShadow: '0 2px 6px rgba(0,0,0,0.25)'
+              }}
+            >
+              <strong>{hoveredPlayer.profile.name}</strong>
+              <div style={{ fontSize: '11px', opacity: 0.85 }}>
+                {hoveredPlayer.profile.position} · {hoveredPlayer.profile.height} מ'
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

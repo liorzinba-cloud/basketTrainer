@@ -1,0 +1,56 @@
+[
+  {
+    "name": "אלון",
+    "height": "1.88",
+    "position": "PG",
+    "team": "offense"
+  },
+  {
+    "name": "עידן",
+    "height": "1.95",
+    "position": "SG",
+    "team": "offense"
+  },
+  {
+    "name": "בר",
+    "height": "2.01",
+    "position": "SF",
+    "team": "offense"
+  },
+  {
+    "name": "דניאל",
+    "height": "2.06",
+    "position": "PF",
+    "team": "offense"
+  },
+  {
+    "name": "קייל",
+    "height": "2.11",
+    "position": "C",
+    "team": "offense"
+  },
+  {
+    "name": "יונתן",
+    "height": "1.85",
+    "position": "PG",
+    "team": "offense"
+  },
+  {
+    "name": "שחר",
+    "height": "2.08",
+    "position": "C",
+    "team": "offense"
+  },
+  {
+    "name": "lior z",
+    "height": "1.85",
+    "position": "C",
+    "team": "offense"
+  },
+  {
+    "name": "yossi",
+    "height": "1.95",
+    "position": "C",
+    "team": "offense"
+  }
+]

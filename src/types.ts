@@ -28,4 +28,7 @@ export interface PlaybookDrill {
   name: string;
   description: string;
   frames: Frame[];
+  /** Player profiles used by the drill (saved with recorded drills). */
+  team?: TeamPlayerProfile[];
+  savedAt?: string;
 }
